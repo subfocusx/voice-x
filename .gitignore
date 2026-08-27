@@ -1,0 +1,32 @@
+# Build outputs
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Test / coverage
+.coverage
+.pytest_cache/
+
+# App runtime artifacts
+recordings/
+logs/
+*.wav
+*.mp3
+*.lnk
+
+# Local user config (contains machine-specific paths)
+settings.json
+data/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

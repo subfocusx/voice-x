@@ -1,0 +1,9 @@
+# Voice-X — локальная расшифровка аудио/видео (GigaAM, офлайн)
+# Установка:  <venv>\Scripts\python.exe -m pip install -r requirements.txt
+
+customtkinter>=5.2
+tkinterdnd2>=0.4
+onnx_asr>=0.12
+onnxruntime>=1.19
+numpy>=1.26
+soundcard>=0.4.6
