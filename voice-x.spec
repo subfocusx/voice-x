@@ -1,37 +1,40 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Voice-X: onedir, windowed, with system tray and ASR model.
+"""PyInstaller spec для Voice-X: onedir, windowed, с треем и моделью.
 
-Builds a self-contained folder dist/Voice-X:
-    Voice-X.exe          - launches without a console
-    _internal/models/    - the GigaAM ONNX int8 model (approx. 214 MB)
-    _internal/...        - Python runtime + bundled dependency packages
+Собирает самодостаточную папку dist/Voice-X:
+    Voice-X.exe          — запуск без консоли
+    bin/ffmpeg.exe       — забандленный ffmpeg (для декодирования)
+    bin/ffprobe.exe      — забандленный ffprobe (для probe/duration)
+    _internal/models/    — модель GigaAM (214 MB)
+    _internal/...        — python runtime + зависимые пакеты
 
-ffmpeg is NOT bundled (a full build is ~217 MB) - the app locates it via the
-WinGet Links folder / PATH (see services/ffmpeg._find).
+ffmpeg/ffprobe бандлятся в bin/ дистрибутива (всё в одном месте, на целевой
+машине внешний ffmpeg не требуется). services/ffmpeg._find ищет их первым
+делом в resource_dir()/bin, затем как fallback — через WinGet Lines/PATH.
 
-Before building, place the GigaAM model into ./models (config.json +
-v3_e2e_ctc.int8.onnx + vocab). The spec silently skips it if the folder is
-absent.
-
-Run from the project root:
-    python -m PyInstaller voice-x.spec --noconfirm --clean
+Запуск сборки:
+    <venv>\\python.exe -m PyInstaller voice-x.spec --noconfirm --clean
 """
-from pathlib import Path
+import os
 
 from PyInstaller.utils.hooks import collect_all
 
-ROOT = Path(__file__).resolve().parent
-MODELS = ROOT / "models"  # drop the GigaAM int8 model here before building
+ROOT = r"E:\Code\Python\voice-x"
 
 datas = []
 binaries = []
 hiddenimports = ["darkdetect", "ui.native_file_dialog"]
 
-# GigaAM model (config.json + v3_e2e_ctc.int8.onnx + vocab) -> _internal/models
-if MODELS.exists():
-    datas += [(str(MODELS), "models")]
+# модель GigaAM (config.json + v3_e2e_ctc.int8.onnx + vocab) -> _internal/models
+datas += [(r"E:\Code\Python\writher-V.1.1.0\models", "models")]
 
-# packages that ship data/binaries (customtkinter themes, tkdnd, onnx_asr configs)
+# ffmpeg/ffprobe -> bin/ дистрибутива (возле exe; ищет services/ffmpeg._find)
+datas += [
+    (os.path.join(ROOT, "bin", "ffmpeg.exe"), "bin"),
+    (os.path.join(ROOT, "bin", "ffprobe.exe"), "bin"),
+]
+
+# пакеты со своими data/binaries (темы customtkinter, tkdnd, onnx_asr configs)
 for pkg in ("customtkinter", "tkinterdnd2", "onnx_asr"):
     d, b, h = collect_all(pkg)
     datas += d
@@ -39,8 +42,8 @@ for pkg in ("customtkinter", "tkinterdnd2", "onnx_asr"):
     hiddenimports += h
 
 a = Analysis(
-    [str(ROOT / "app.py")],
-    pathex=[str(ROOT)],
+    [ROOT + "\\app.py"],
+    pathex=[ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -66,7 +69,7 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
-    icon=str(ROOT / "voice-x.ico"),
+    icon=ROOT + "\\voice-x.ico",
 )
 
 coll = COLLECT(

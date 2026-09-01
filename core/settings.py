@@ -21,6 +21,7 @@ _DEFAULTS_FILE = data_dir() / "settings.json"
 _MODEL_CANDIDATES = [
     (resource_dir() / "models"),                                  # забандленная (frozen)
     (project_root() / "models"),                                  # своя папка
+    Path(r"E:\Code\Python\writher-V.1.1.0\models"),               # реквизит из writher
     Path.home() / ".cache" / "huggingface"
     / "models--istupakov--gigaam-v3-onnx-int8",
 ]
@@ -33,6 +34,10 @@ class Settings:
     clean_enabled: bool = False
     engine: str = "gigaam"
     save_mp3: bool = False   # также сохранять MP3 после записи
+    models_root: str = ""    # корень с папками моделей для выпадающего списка
+    mic_gain: float = 1.0    # усиление микрофона при записи «+ система»
+    system_gain: float = 1.0 # усиление системного звука при записи «+ микрофон»
+    rec_limiter: bool = True # ограничение уровня при записи (защита от клиппинга)
 
     @classmethod
     def load(cls, path: Path = _DEFAULTS_FILE) -> "Settings":
@@ -42,6 +47,9 @@ class Settings:
             s = cls(**data)
         except (FileNotFoundError, json.JSONDecodeError, TypeError):
             pass
+        # если models_root не задан — возьмём стандартный корень моделей
+        if not s.models_root:
+            s.models_root = _default_models_root()
         return s
 
     def save(self, path: Path = _DEFAULTS_FILE) -> None:
@@ -62,3 +70,13 @@ class Settings:
 
 def settings_dir() -> Path:
     return data_dir()
+
+
+def _default_models_root() -> str:
+    """Корень с папками-моделями для выпадающего списка.
+
+    По умолчанию — `D:\\models\\voice` (локальное расположение моделей юзера).
+    Можно переопределить в settings.json через `models_root`.
+    """
+    candidate = Path(r"D:\models\voice")
+    return str(candidate) if candidate.is_dir() else ""

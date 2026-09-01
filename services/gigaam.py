@@ -1,6 +1,6 @@
 """GigaAM v3 E2E CTC (int8) через onnx-asr — русскоязычное распознавание.
 
-Повторяет проверенную логику распознавания:
+Повторяет проверенную логику writher/asr_engine.py + test_gigaam.py:
 частьями по 30 сек, load_model c quantization="int8" на CPU.
 Логирование — через общий логгер voicex (см. core/logging_setup.py).
 """
@@ -18,8 +18,66 @@ import numpy as np
 from core.logging_setup import get_logger
 from .engine import EngineInterface
 
-CHUNK_SECONDS = 30  # максимум на один вызов recognize (обходим проблему длинного аудио)
+CHUNK_SECONDS = 30  # максимум для одного вызова recognize (обходим проблему длинного аудио)
 log = get_logger("gigaam")
+
+
+def detect_model_variant(directory: "str | Path") -> "tuple[str, str | None] | None":
+    """По содержимому папки определить (имя_модели, quantization) для onnx_asr.
+
+    Файлы ищутся рекурсивно (rnnt: *_rnnt_encoder/decoder/joint.onnx; ctc: *_ctc.onnx).
+    Квантизация выводится из имени файла: наличие «.int8.» перед .onnx → "int8",
+    иначе None (fp32). Если подходящих файлов нет — (None, None).
+
+    Возврат: ("gigaam-v3-e2e-ctc", "int8") | ("gigaam-v3-e2e-rnnt", None) | (None, None)
+    """
+    p = Path(directory)
+    if not p.is_dir():
+        return None, None
+    names = [f.name for f in p.rglob("*.onnx")]
+    if not names:
+        return None, None
+
+    rnnt = [n for n in names if "_rnnt_" in n]
+    ctc = [n for n in names if "_ctc" in n]
+
+    def _quant(onx_names: list[str]) -> "str | None":
+        for n in onx_names:
+            stem = n[:-len(".onnx")] if n.endswith(".onnx") else n
+            if ".int8" in stem:
+                return "int8"
+        return None
+
+    if rnnt:
+        return "gigaam-v3-e2e-rnnt", _quant(rnnt)
+    if ctc:
+        return "gigaam-v3-e2e-ctc", _quant(ctc)
+    return None, None
+
+
+def discover_models(root: "str | Path") -> "list[dict[str, str | None]]":
+    """Папки-модели внутри root (по одной версии на подпапку).
+
+    Возвращает [{label, path, model, quantization}, ...] — для выпадающего
+    списка. Подпапки без файлов GigaAM пропускаются.
+    """
+    root = Path(root)
+    out: "list[dict[str, str | None]]" = []
+    if not root.is_dir():
+        return out
+    for sub in sorted(root.iterdir()):
+        if not sub.is_dir():
+            continue
+        model, quant = detect_model_variant(sub)
+        if model is None:
+            continue
+        out.append({
+            "label": sub.name,
+            "path": str(sub),
+            "model": model,
+            "quantization": quant,
+        })
+    return out
 
 
 class GigaAMEngine(EngineInterface):
@@ -56,11 +114,19 @@ class GigaAMEngine(EngineInterface):
             from onnx_asr import load_model
 
             _register_cuda_dll_paths()
-            log.info("loading model from %s", self._resolve_model_dir())
+            model_dir = self._resolve_model_dir()
+            model, quantization = detect_model_variant(model_dir)
+            if model is None:
+                raise FileNotFoundError(
+                    f"В папке модели не найдено файлов GigaAM "
+                    f"(*_ctc.onnx / *_rnnt_*.onnx): {model_dir}"
+                )
+            log.info("loading model=%s quantization=%s from %s",
+                     model, quantization, model_dir)
             self._asr = load_model(
-                "gigaam-v3-e2e-ctc",
-                path=str(self._resolve_model_dir()),
-                quantization="int8",
+                model,
+                path=str(model_dir),
+                quantization=quantization,
                 providers=["CPUExecutionProvider"],
             )
             log.info("model loaded")

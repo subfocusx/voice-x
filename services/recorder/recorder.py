@@ -45,6 +45,13 @@ def _unwrap_device(dev):
     return inner if inner is not None else dev
 
 
+def _concat_blocks(blocks: "List[np.ndarray]") -> np.ndarray:
+    """Склеить список float32-блоков в один массив (пустой список -> []).."""
+    if not blocks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(blocks).astype(np.float32)
+
+
 class AudioRecorder:
     def __init__(self):
         self._state = RecordingState.IDLE
@@ -53,13 +60,17 @@ class AudioRecorder:
         self._session: Optional[audio_capture.CaptureSession] = None
         self._stop_event = threading.Event()
         self._cancel_requested = False
-        self._chunks: List[np.ndarray] = []
+        self._mic_chunks: List[np.ndarray] = []
+        self._sys_chunks: List[np.ndarray] = []
         self._levels = {audio_capture._MIC: 0.0, audio_capture._SYS: 0.0}
         self._source_kind = "mic"
         self.mic_device = None
         self.system_device = None
         self.samplerate = DEFAULT_SAMPLERATE
         self.save_mp3 = False
+        self.mic_gain = 1.0
+        self.system_gain = 1.0
+        self.limiter = True
         self.error: Optional[str] = None
         self.last_path: Optional[Path] = None
         self.duration_sec: float = 0.0
@@ -93,6 +104,9 @@ class AudioRecorder:
         system_device=None,
         samplerate: int = DEFAULT_SAMPLERATE,
         save_mp3: bool = False,
+        mic_gain: float = 1.0,
+        system_gain: float = 1.0,
+        limiter: bool = True,
     ) -> None:
         """Начать запись в фоновом потоке. Бросает, если уже идёт."""
         if self.is_busy():
@@ -103,7 +117,11 @@ class AudioRecorder:
         self.system_device = system_device
         self.samplerate = samplerate
         self.save_mp3 = save_mp3
-        self._chunks.clear()
+        self.mic_gain = max(0.0, float(mic_gain))
+        self.system_gain = max(0.0, float(system_gain))
+        self.limiter = bool(limiter)
+        self._mic_chunks.clear()
+        self._sys_chunks.clear()
         self.error = None
         self.last_path = None
         self.duration_sec = 0.0
@@ -153,8 +171,9 @@ class AudioRecorder:
         try:
             session.open()
             while not self._stop_event.is_set():
-                mono, levels = session.read()
-                self._chunks.append(np.ascontiguousarray(mono))
+                mic, sys, levels = session.read()
+                self._mic_chunks.append(np.ascontiguousarray(mic))
+                self._sys_chunks.append(np.ascontiguousarray(sys))
                 with self._lock:
                     self._levels = levels
         except audio_capture.SourceUnavailableError as exc:
@@ -199,10 +218,31 @@ class AudioRecorder:
 
     # ── файл ───────────────────────────────────────────────────────────────
     def _write_wav(self) -> Path:
-        if not self._chunks:
+        if not (self._mic_chunks or self._sys_chunks):
             raise RuntimeError("нет записанных данных")
-        mono = np.concatenate(self._chunks).astype(np.float32)
-        ints = (np.clip(mono, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+        mic = _concat_blocks(self._mic_chunks)
+        sys = _concat_blocks(self._sys_chunks)
+        n = min(mic.size, sys.size) if (mic.size and sys.size) else max(mic.size, sys.size)
+        mic = mic[:n] if mic.size else np.zeros(n, dtype=np.float32)
+        sys = sys[:n] if sys.size else np.zeros(n, dtype=np.float32)
+
+        # взвешенный микс: своя речь (mic) + системный звук (собеседники из
+        # браузера) с раздельными уровнями, вместо тупого среднего.
+        mixed = mic * self.mic_gain + sys * self.system_gain
+
+        if self.limiter:
+            # мягкий лимитер: при одновременной речи двух источников сумма
+            # не рвётся на жёстких клипах, наложение остаётся разборчивым.
+            mixed = np.tanh(mixed)
+
+        # нормализация общей громкости: тихую запись поднимаем к комфортному
+        # пику, уже громкую не трогаем (нижней границы нет — не душим сигнал).
+        peak = float(np.abs(mixed).max()) if mixed.size else 0.0
+        if peak > 1e-6 and peak < 0.9:
+            mixed = mixed * (0.9 / peak)
+
+        ints = (np.clip(mixed, -1.0, 1.0) * 32767.0).astype(np.int16)
         out_dir = recordings_dir()
         stem = "rec_" + time.strftime("%Y%m%d_%H%M%S")
         path = out_dir / f"{stem}.wav"

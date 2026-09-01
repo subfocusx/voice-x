@@ -38,13 +38,17 @@ class RecorderPanel(ctk.CTkFrame):
     stop с путём к WAV; `on_busy_changed` — при входе/выходе из записи."""
 
     def __init__(self, master, *, on_transcribe, on_busy_changed=None, on_toast=None,
-                 save_mp3: bool = False, on_save_mp3=None):
+                 save_mp3: bool = False, on_save_mp3=None,
+                 mic_gain: float = 1.0, system_gain: float = 1.0, limiter: bool = True):
         super().__init__(master, fg_color=SURFACE, corner_radius=14)
         self.on_transcribe = on_transcribe
         self.on_busy_changed = on_busy_changed
         self.on_toast = on_toast
         self._save_mp3 = bool(save_mp3)
         self._on_save_mp3 = on_save_mp3
+        self._mic_gain = float(mic_gain)
+        self._system_gain = float(system_gain)
+        self._limiter = bool(limiter)
 
         self.recorder = AudioRecorder()
         self._sources = list_sources()
@@ -134,13 +138,17 @@ class RecorderPanel(ctk.CTkFrame):
         return rec_btn, timer_lbl, status_lbl
 
     def _build_advanced(self):
-        """Сворачиваемый блок: выбор устройств + индикаторы уровня."""
+        """Сворачиваемый блок: выбор устройств + уровни + баланс микса."""
         self._adv_frame = ctk.CTkFrame(self, fg_color="transparent")
         self._adv_frame.grid_columnconfigure(1, weight=1)
         self._mic_btn = self._device_row(self._adv_frame, 0, "Микрофон")
         self._sys_btn = self._device_row(self._adv_frame, 1, "Система")
         mic_bar, _ = self._level_row(self._adv_frame, 2, "Ур. микрофона")
         sys_bar, _ = self._level_row(self._adv_frame, 3, "Ур. системы")
+        self._mic_gain_slider = self._gain_row(self._adv_frame, 4, "Громкость микрофона")
+        self._sys_gain_slider = self._gain_row(self._adv_frame, 5, "Громкость системы")
+        self._mic_gain_slider.set(self._mic_gain)
+        self._sys_gain_slider.set(self._system_gain)
         self._adv_frame.grid(row=3, column=0, columnspan=4, sticky="ew")
         self._apply_advanced_visibility()
         return mic_bar, sys_bar
@@ -167,6 +175,17 @@ class RecorderPanel(ctk.CTkFrame):
         bar.grid(row=row, column=1, columnspan=3, padx=14, pady=2, sticky="ew")
         bar.set(0.0)
         return bar, None
+
+    def _gain_row(self, parent, row: int, label: str):
+        ctk.CTkLabel(parent, text=label, text_color=TEXT_MUTE,
+                     font=font(11)).grid(row=row, column=0, padx=(14, 6), pady=2, sticky="w")
+        slider = ctk.CTkSlider(
+            parent, from_=0.0, to=2.0, number_of_steps=40, width=240,
+            fg_color=SURFACE_2, progress_color=ACCENT, button_color=ACCENT,
+            button_hover_color=ACCENT_HOVER,
+        )
+        slider.grid(row=row, column=1, columnspan=3, padx=14, pady=2, sticky="ew")
+        return slider
 
     # ── данные устройств ───────────────────────────────────────────────────
     def _populate_device_menus(self) -> None:
@@ -224,8 +243,13 @@ class RecorderPanel(ctk.CTkFrame):
             self._status_lbl.configure(text="Нет системного устройства", text_color=DANGER)
             return
         try:
-            self.recorder.start(kind, mic_device=mic_dev, system_device=sys_dev,
-                                save_mp3=self._save_mp3)
+            self.recorder.start(
+                kind, mic_device=mic_dev, system_device=sys_dev,
+                save_mp3=self._save_mp3,
+                mic_gain=float(self._mic_gain_slider.get()),
+                system_gain=float(self._sys_gain_slider.get()),
+                limiter=self._limiter,
+            )
         except RuntimeError as exc:
             self._status_lbl.configure(text=str(exc), text_color=DANGER)
             return

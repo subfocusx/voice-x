@@ -1,68 +1,104 @@
-# Voice-X
+# Voice-X — локальная расшифровка + аудиозапись
 
-**Voice-X** is a lightweight desktop speech-to-text workbench for Russian audio and video. It records microphone audio or accepts a dropped file, transcribes it **locally** (no cloud) with the [GigaAM v3](https://huggingface.co/istupakov/gigaam-v3) ONNX model, and writes the cleaned transcript to a `.txt` file.
+Офлайн-десктоп-приложение на Python + CustomTkinter: локальная запись звука
+(микрофон и/или системный выход) и распознавание речи на русской модели
+**GigaAM v3** (ONNX, int8). Никакого облака — всё считает локально.
 
-Built with Python + `customtkinter`, it runs as a classic Windows desktop app with a system-tray presence.
+## Возможности
 
-> v0.1.0 — initial release.
+- **Локальный рекордер**: запись с микрофона, системного звука (Google Meet,
+  Zoom, браузер) или обоих сразу; таймер + индикатор уровня; WAV на диск.
+- **Авто-расшифровка**: после остановки записи запускается уже существующий
+  конвейер распознавания — результат `*.txt`.
+- **Drag&drop расшифровка** готовых аудио/видеофайлов (сохранена без изменений).
+- Опционально сохранять MP3 рядом с WAV (галка «MP3» в панели записи).
 
----
+## Запуск
 
-## Features
+Двойной клик `run.cmd` либо:
 
-- 🎙️ Record from your microphone, or drag-and-drop an audio/video file onto the window.
-- 🔒 **Fully offline** transcription — nothing leaves your machine (GigaAM v3, ONNX int8, CPU only).
-- 📄 Transcript is cleaned up and saved as a `.txt` next to the app data.
-- 🧰 System tray: closing the window hides to the tray, a click restores it.
-- 🌍 UI is in **Russian** (the ASR model is Russian-focused).
-
-## Requirements
-
-- Windows 10/11.
-- Python **3.11+** when running from source.
-- [ffmpeg](https://ffmpeg.org/) on `PATH` (used to decode audio/video; **not** bundled because it is large).
-
-## Run from source
-
-```bash
-git clone https://github.com/subfocusx/voice-x.git
-cd voice-x
-py -3.11 -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python app.py
+```powershell
+<venv>\Scripts\python.exe app.py
 ```
 
-By default the app looks for the GigaAM model in `./models` (or in the standard Hugging Face cache). Put the model files there if you want it to auto-detect:
+Тестовый прогон пайплайна из консоли (без GUI):
 
-```
-models/
-  config.json
-  v3_e2e_ctc.int8.onnx
-  vocab.json
+```powershell
+python -m services.cli "path/to/file.mp4" [--model-dir ...]
 ```
 
-## Build a standalone `.exe`
+## Установка зависимостей
 
-```bat
-build.bat
+```powershell
+<venv>\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-This regenerates the icon (`build_icon.py`) and runs PyInstaller to produce `dist\Voice-X\Voice-X.exe` (onedir, windowed). Place the model in `./models` before building so it is bundled.
+- `soundcard>=0.4.6` — захват звука через WASAPI (микрофон + loopback).
+- `ffmpeg`/`ffprobe` — декодирование и конвертация (на PATH или WinGet-линки).
 
-## Tests
+## Архитектура
 
-```bash
-.venv\Scripts\python -m pytest
+Voice-X разделён на слои; UI не знает об аудио-API, а расшифровка не знает о GUI.
+
+```
+core/      пути, настройки, модель Job / состояния записи, логирование
+services/
+  transcriber.py   пайплайн расшифровки (transcribe_file -> Job)
+  ffmpeg.py        декод/конвертация (wav, mp3, 16k mono)
+  recorder/        <-- НОВЫЙ ЛОКАЛЬНЫЙ РЕКОРДЕР
+    __init__.py    публичное API
+    wasapi.py      перечисление устройств (mic + loopback), метки
+    audio_capture.py  абстракция потока захвата (open/read/close)
+    recorder.py    AudioRecorder: start/stop/pause/resume/cancel/get_state/get_levels
+ui/        main_window, worker (Worker/Queue), panel записи, результат
+app.py     точка входа
 ```
 
-## Technologies
+### Рекордер как отдельная служба
 
-- [customtkinter](https://customtkinter.tomschimansky.com/) — modern Tkinter UI
-- [onnxruntime](https://onnxruntime.ai/) + [onnx-asr](https://github.com/istupakov/onnx-asr) — on-device ASR
-- [SoundCard](https://github.com/bastibe/SoundCard) — WAV capture
-- [pystray](https://github.com/moses-palmer/pystray) — system tray
-- [PyInstaller](https://pyinstaller.org/) — packaging
+`services/recorder` — автономный слой без привязки к GUI и к транскрайберу:
 
-## License
+- `AudioRecorder` интерфейс: `start()`, `stop()`, `cancel()`, `get_state()`,
+  `get_levels()`; не возвращает объекты UI.
+- Фоновый поток (`voicex-recorder`) ведёт захват, пишет WAV в
+  `core.paths.recordings_dir()` и по завершении переходит в
+  `RecordingState.DONE` (или `ERROR`/`CANCELLED`).
+- Остановка → сохранённый WAV → автоматически вызывается
+  `services.transcriber.transcribe_file(...)` — та же цепочка, что и для
+  перетащенного файла.
 
-No license has been set yet — treat it as all rights reserved until one is added.
+### Поток захвата (WASAPI, soundcard 0.4.6)
+
+`soundcard.all_microphones(include_loopback=True)` возвращает настоящие
+микрофоны (`isloopback=False`) и loopback каждого устройства воспроизведения
+(`isloopback=True`). Именно так ловится «системный звук» без OBS и внешних
+зависимостей.
+
+> Заметка: у объекта `_Speaker` в soundcard 0.4.6 **нет** `.recorder()` —
+> рабочий путь только через `all_microphones(include_loopback=True)`.
+
+Запись ведётся на 48 кГц, моно. Для режима «Микрофон + система» два потока
+(микрофон + loopback) работают одновременно и **усредняются** (мягкий микс без
+клиппинга) — осознанный компромисс: объём может слегка просесть, зато один WAV
+без дополнительной обработки.
+
+### Поток расшифровки
+
+После записи WAV 48 кГц проходит штатный путь: `ffmpeg` ресемплит в 16 кГц моно,
+`GigaAM` распознаёт, при включённой очистке — LLM-очистка. Результат —
+`{stem}_расшифровка.txt` рядом с исходником/в папке результата.
+
+### Состояния
+
+- **Рекордер** — своя машина: `IDLE → RECORDING → STOPPING → DONE | ERROR | CANCELLED`.
+- **Расшифровка** — отдельная: `PROBE → EXTRACT → ASR → CLEAN → DONE | ERROR | CANCELLED`.
+
+## Тесты
+
+```powershell
+<venv>\Scripts\python.exe -m pytest
+```
+
+`tests/test_recorder.py` — хардвар-агностичные проверки: модель состояний,
+фильтрация/дефолт устройств (без обращения к реальному звуку), конвертация
+wav→mp3 на синтезированном сигнале (пропускается, если ffmpeg недоступен).

@@ -25,6 +25,18 @@ class SourceUnavailableError(RuntimeError):
 _MIC = wasapi.KIND_MIC
 _SYS = wasapi.KIND_SYSTEM
 
+#: человекочитаемые метки источника для сообщений об ошибке
+_KIND_LABEL = {_MIC: "Микрофон", _SYS: "Системный звук"}
+
+
+def _open_error_text(name: str, exc: Exception) -> str:
+    """Понятное сообщение об ошибке открытия устройства."""
+    return (
+        f"Не удалось открыть «{name}» ({exc}). "
+        "Проверьте устройство по умолчанию (Параметры → Звук → Ввод) "
+        "или выберите другое устройство из списка."
+    )
+
 
 class CaptureSession:
     """Открывает потоки захвата и читает из них моно-блоки.
@@ -89,13 +101,17 @@ class CaptureSession:
         return self.source_kind in (_SYS, "both")
 
     def _open_recorder(self, kind: str, device) -> None:
-        name = getattr(device, "name", None) or kind
-        rec = device.recorder(
-            samplerate=self.samplerate,
-            channels=self.channels,
-            blocksize=self.blocksize,
-        )
-        rec.__enter__()  # держим поток открытым между вызовами read()
+        name = getattr(device, "name", None) or _KIND_LABEL.get(kind, kind)
+        try:
+            rec = device.recorder(
+                samplerate=self.samplerate,
+                channels=self.channels,
+                blocksize=self.blocksize,
+            )
+            rec.__enter__()  # держим поток открытым между вызовами read()
+        except Exception as exc:  # noqa: BLE001 — показываем причину в UI
+            log.error("open recorder failed kind=%s dev=%s: %s", kind, name, exc)
+            raise SourceUnavailableError(_open_error_text(name, exc))
         self._recs.append((kind, name, rec))
 
     # ── резолв дефолтных устройств ─────────────────────────────────────────
@@ -114,12 +130,19 @@ class CaptureSession:
         return wasapi.default_device(_SYS).device if wasapi.default_device(_SYS) else None
 
     # ── чтение ─────────────────────────────────────────────────────────────
-    def read(self) -> Tuple[np.ndarray, Dict[str, float]]:
-        """Один блок: (мono float32, levels {'mic','system'} — пиковые 0..1)."""
+    def read(self) -> "Tuple[np.ndarray, np.ndarray, Dict[str, float]]":
+        """Один блок: (mic float32, sys float32, levels {'mic','system'} — пиковые 0..1).
+
+        Каналы микрофона и системного звука возвращаются РАЗДЕЛЬНО (не
+        миксованные) — смешивание с усилением/лимитером делает AudioRecorder
+        при записи (_write_wav). Когда соответствующего источника нет —
+        канал заполняется нулями той же формы, что и наличный блок.
+        """
         if not self._opened:
             raise RuntimeError("capture session not opened")
         levels = {_MIC: 0.0, _SYS: 0.0}
-        mono_parts: List[np.ndarray] = []
+        parts: Dict[str, np.ndarray] = {}
+        max_len = 0
         for kind, _name, rec in self._recs:
             block = rec.record(numframes=self.blocksize)
             if block is None or block.size == 0:
@@ -131,18 +154,22 @@ class CaptureSession:
                 mono = b.reshape(-1)
             peak = float(np.abs(mono).max()) if mono.size else 0.0
             levels[kind] = peak
-            mono_parts.append(mono)
+            parts[kind] = mono
+            max_len = max(max_len, mono.size)
 
-        if not mono_parts:
-            return np.zeros(self.blocksize, dtype=np.float32), levels
+        if not parts:
+            zero = np.zeros(self.blocksize, dtype=np.float32)
+            return zero, zero, levels
 
-        if len(mono_parts) == 1:
-            mixed = mono_parts[0]
-        else:
-            # «оба»: мягкий микс (среднее) — не даёт клипа при наложении
-            n = min(x.size for x in mono_parts)
-            mixed = sum(x[:n] for x in mono_parts) / len(mono_parts)
-        return mixed, levels
+        mic = parts.get(_MIC)
+        sys = parts.get(_SYS)
+        if mic is None:
+            mic = np.zeros(max_len, dtype=np.float32)
+        if sys is None:
+            sys = np.zeros(max_len, dtype=np.float32)
+        # одинаковый размер для честного поканального суммирования
+        n = min(mic.size, sys.size)
+        return mic[:n], sys[:n], levels
 
     # ── закрытие ───────────────────────────────────────────────────────────
     def close(self) -> None:

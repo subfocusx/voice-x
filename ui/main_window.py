@@ -181,6 +181,7 @@ class MainWindow(ctk.CTk):
         self.upload.grid(row=0, column=1, padx=(8, 4), pady=8, sticky="ew")
 
         # 1b) движок + папка модели — справа, иконки вместо длинных кнопок
+        self._models_list: list[dict] = []
         self.engine_menu = ctk.CTkOptionMenu(
             top_bar, values=["GigaAM v3 (int8)"], width=150,
             fg_color=SURFACE_2, button_color=SURFACE_2, button_hover_color=SURFACE_HOVER,
@@ -189,6 +190,7 @@ class MainWindow(ctk.CTk):
             command=self._on_engine_change,
         )
         self.engine_menu.grid(row=0, column=2, padx=(4, 4), pady=8, sticky="e")
+        self._refresh_model_list()
 
         self.model_dir_btn = ctk.CTkButton(
             top_bar, text="📂", width=40, height=40, command=self._pick_model_dir,
@@ -220,6 +222,9 @@ class MainWindow(ctk.CTk):
             on_toast=lambda msg, kind="info": self._toast.show(msg, kind=kind),
             save_mp3=self.settings.save_mp3,
             on_save_mp3=self._on_save_mp3,
+            mic_gain=self.settings.mic_gain,
+            system_gain=self.settings.system_gain,
+            limiter=self.settings.rec_limiter,
         )
         self.recorder_panel.grid(row=4, column=0, padx=16, pady=(8, 0), sticky="ew")
 
@@ -309,8 +314,35 @@ class MainWindow(ctk.CTk):
         self.result.clear()
 
     def _on_engine_change(self, _choice: str) -> None:
-        # MVP: движок только GigaAM. Здесь появится переключатель на whisper.
-        pass
+        # выбор в выпадающем списке = выбор папки модели; движок всегда GigaAM
+        for entry in self._models_list:
+            if entry["label"] == _choice:
+                self.settings.model_dir = str(entry["path"])
+                self.settings.save()
+                self._check_model_hint()
+                self._toast.show(f"Модель: {entry['label']}")
+                return
+
+    def _refresh_model_list(self) -> None:
+        """Заполнить выпадающий список папками-моделями из корня моделей."""
+        from services.gigaam import discover_models
+        root = self.settings.models_root or ""
+        self._models_list = discover_models(root) if root else []
+        if self._models_list:
+            self.engine_menu.configure(
+                values=[e["label"] for e in self._models_list])
+            # показать текущую выбранную модель (по model_dir), иначе первую
+            cur = Path(self.settings.model_dir).resolve()
+            current_label = next(
+                (e["label"] for e in self._models_list
+                 if Path(str(e["path"])).resolve() == cur),
+                self._models_list[0]["label"],
+            )
+            self.engine_menu.set(current_label)
+        else:
+            self.engine_menu.configure(
+                values=["GigaAM v3 (int8) (папка не найдена)"])
+            self.engine_menu.set("GigaAM v3 (int8) (папка не найдена)")
 
     # ── drag & drop (на корневом окне — ловим всюду) ─────────────────────
     def _on_drop_file(self, event) -> str:

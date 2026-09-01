@@ -1,6 +1,7 @@
 """Обёртка над ffmpeg/ffprobe: декодирование аудио в wav-16k-mono и длина файла.
 
-Логика декода проверенная: через ffmpeg в pcm_s16le 16000/1, чтение через numpy.
+Логика взята из проверенного пайплайна writher (test_gigaam.py + asr_engine.py):
+декод через ffmpeg в pcm_s16le 16000/1, чтение через numpy.
 Ошибки ffmpeg/ffprobe логируются в voicex.ffmpeg (см. core/logging_setup.py).
 """
 from __future__ import annotations
